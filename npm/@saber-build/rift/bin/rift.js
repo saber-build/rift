@@ -17,7 +17,7 @@ if (!platform || !arch) {
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const binary = path.join(root, "prebuilds", `${platform}-${arch}`, platform === "windows" ? "rift.exe" : "rift")
 if (!fs.existsSync(binary)) {
-  console.error(`Unable to locate the Rift binary for ${platform}-${arch}. Reinstall rift-snapshot.`)
+  console.error(`Unable to locate the Rift binary for ${platform}-${arch}. Reinstall @saber-build/rift.`)
   process.exit(1)
 }
 

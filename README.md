@@ -15,9 +15,9 @@ more support soon
 ## Install
 
 ```bash
-npm install -g rift-snapshot
+npm install -g @saber-build/rift
 # or
-bun add -g rift-snapshot
+bun add -g @saber-build/rift
 ```
 
 Release archives are available from [GitHub Releases](https://github.com/anomalyco/rift/releases/latest).
@@ -145,7 +145,7 @@ Default created-workspace storage is adjacent to the registered source root:
 The package selects a Bun or Node FFI binding through conditional exports.
 
 ```ts
-import { create, list, remove, gc } from "rift-snapshot";
+import { create, list, remove, gc } from "@saber-build/rift";
 
 const workspace = create({ from: process.cwd(), name: "schema-work" });
 console.log(list({ of: process.cwd() }));

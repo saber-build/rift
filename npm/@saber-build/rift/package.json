@@ -1,11 +1,11 @@
 {
-  "name": "rift-snapshot",
+  "name": "@saber-build/rift",
   "version": "0.0.10",
   "description": "Fast copy-on-write development workspaces",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anomalyco/rift.git"
+    "url": "git+https://github.com/saber-build/rift.git"
   },
   "type": "module",
   "bin": {
@@ -36,6 +36,7 @@
     "x64"
   ],
   "publishConfig": {
-    "provenance": true
+    "provenance": true,
+    "access": "public"
   }
 }
