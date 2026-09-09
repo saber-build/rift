@@ -42,21 +42,30 @@ pub(crate) struct CopyFilter {
 
 impl Default for CopyFilter {
     fn default() -> Self {
-        Self::new(&[], &[], false).expect("built-in exclude patterns are valid")
+        Self::new(&[], &[], false, true).expect("built-in exclude patterns are valid")
     }
 }
 
 impl CopyFilter {
-    /// Builds a filter from the built-in defaults, treating every `exclude`
-    /// entry as a gitignore pattern and every `include` entry as a gitignore
-    /// negation. Later patterns win, so an `include` overrides both the
-    /// built-in defaults and any earlier `exclude` for the same path. `no_git`
-    /// additionally drops the copy root's `.git`; see [`Self::excludes`].
-    /// Returns [`Error::InvalidFilter`] if a pattern cannot be parsed.
-    pub(crate) fn new(exclude: &[String], include: &[String], no_git: bool) -> Result<Self> {
+    /// Builds a filter that starts from the built-in defaults when
+    /// `default_excludes` is set and from nothing otherwise, then treats every
+    /// `exclude` entry as a gitignore pattern and every `include` entry as a
+    /// gitignore negation. Later patterns win, so an `include` overrides both
+    /// the built-in defaults and any earlier `exclude` for the same path.
+    /// `no_git` additionally drops the copy root's `.git`; see
+    /// [`Self::excludes`]. Returns [`Error::InvalidFilter`] if a pattern
+    /// cannot be parsed.
+    pub(crate) fn new(
+        exclude: &[String],
+        include: &[String],
+        no_git: bool,
+        default_excludes: bool,
+    ) -> Result<Self> {
         let mut builder = GitignoreBuilder::new("");
-        for pattern in DEFAULT_EXCLUDES {
-            add_pattern(&mut builder, pattern)?;
+        if default_excludes {
+            for pattern in DEFAULT_EXCLUDES {
+                add_pattern(&mut builder, pattern)?;
+            }
         }
         let user_patterns = exclude
             .iter()
@@ -71,6 +80,14 @@ impl CopyFilter {
             .build()
             .map_err(|error| Error::InvalidFilter(error.to_string()))?;
         Ok(Self { matcher, no_git })
+    }
+
+    /// Whether the filter can drop any entry at all: a built-in or user
+    /// exclude pattern is present, or `no_git` is set. `include` negations
+    /// only ever re-include, so a filter made of nothing but negations keeps
+    /// every entry and reports `false`.
+    pub(crate) fn can_exclude(&self) -> bool {
+        self.no_git || self.matcher.num_ignores() > 0
     }
 
     /// Whether the entry at `path` (relative to the copy root) is left out of
@@ -136,8 +153,21 @@ mod tests {
     use super::*;
 
     fn build(exclude: &[&str], include: &[&str], no_git: bool) -> CopyFilter {
+        build_with(exclude, include, no_git, true)
+    }
+
+    fn build_without_defaults(exclude: &[&str], include: &[&str], no_git: bool) -> CopyFilter {
+        build_with(exclude, include, no_git, false)
+    }
+
+    fn build_with(
+        exclude: &[&str],
+        include: &[&str],
+        no_git: bool,
+        default_excludes: bool,
+    ) -> CopyFilter {
         let owned = |patterns: &[&str]| patterns.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>();
-        CopyFilter::new(&owned(exclude), &owned(include), no_git).unwrap()
+        CopyFilter::new(&owned(exclude), &owned(include), no_git, default_excludes).unwrap()
     }
 
     #[test]
@@ -234,8 +264,44 @@ mod tests {
     #[test]
     fn invalid_patterns_are_rejected() {
         assert!(matches!(
-            CopyFilter::new(&["\\".to_owned()], &[], false),
+            CopyFilter::new(&["\\".to_owned()], &[], false, true),
             Err(Error::InvalidFilter(_))
         ));
+    }
+
+    #[test]
+    fn disabled_defaults_keep_built_in_artifacts() {
+        let filter = build_without_defaults(&[], &[], false);
+        assert!(!filter.excludes(Path::new("node_modules"), true));
+        assert!(!filter.excludes(Path::new("packages/app/dist"), true));
+        assert!(!filter.excludes(Path::new(".yarn/cache"), true));
+    }
+
+    #[test]
+    fn disabled_defaults_still_apply_user_excludes() {
+        let filter = build_without_defaults(&["fixtures"], &[], false);
+        assert!(filter.excludes(Path::new("packages/app/fixtures"), true));
+        assert!(!filter.excludes(Path::new("packages/app/node_modules"), true));
+    }
+
+    #[test]
+    fn disabled_defaults_still_drop_git_with_no_git() {
+        let filter = build_without_defaults(&[], &[], true);
+        assert!(filter.excludes(Path::new(".git"), true));
+        assert!(!filter.excludes(Path::new("node_modules"), true));
+    }
+
+    #[test]
+    fn can_exclude_only_when_a_pattern_or_no_git_can_drop_an_entry() {
+        assert!(!build_without_defaults(&[], &[], false).can_exclude());
+        // A negation can only re-include, so it never makes the filter drop anything.
+        assert!(!build_without_defaults(&[], &["dist"], false).can_exclude());
+        // Blank patterns are ignored, so they do not count either.
+        assert!(!build_without_defaults(&["  "], &[], false).can_exclude());
+
+        assert!(build_without_defaults(&["fixtures"], &[], false).can_exclude());
+        assert!(build_without_defaults(&[], &[], true).can_exclude());
+        assert!(CopyFilter::default().can_exclude());
+        assert!(build(&[], &["dist"], false).can_exclude());
     }
 }

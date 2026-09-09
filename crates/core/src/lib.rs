@@ -105,13 +105,31 @@ impl Create {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateOptions {
     pub copy_mode: CopyMode,
     pub hook_mode: HookMode,
     pub exclude: Vec<String>,
     pub include: Vec<String>,
-    pub no_git: bool,
+    /// Whether the workspace's own top-level `.git` is copied. On by default;
+    /// off yields a plain directory with no Git history or branch.
+    pub git: bool,
+    /// Whether the built-in artifact excludes seed the filter. On by default;
+    /// off leaves only `exclude`, `include`, and `git: false` in effect.
+    pub default_excludes: bool,
+}
+
+impl Default for CreateOptions {
+    fn default() -> Self {
+        Self {
+            copy_mode: CopyMode::default(),
+            hook_mode: HookMode::default(),
+            exclude: Vec::new(),
+            include: Vec::new(),
+            git: true,
+            default_excludes: true,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -147,23 +165,54 @@ impl CreateOptions {
         self
     }
 
-    pub fn no_git(mut self, no_git: bool) -> Self {
-        self.no_git = no_git;
+    pub fn git(mut self, git: bool) -> Self {
+        self.git = git;
         self
     }
 
-    /// The filter these options describe. Filtering only makes sense for a
-    /// filtered copy, so any exclude, include, or no-git alongside an exact
-    /// copy is rejected here, before anything is touched.
-    pub(crate) fn copy_filter(&self) -> Result<filter::CopyFilter> {
+    pub fn default_excludes(mut self, default_excludes: bool) -> Self {
+        self.default_excludes = default_excludes;
+        self
+    }
+
+    /// The copy mode and filter these options describe. Filtering only makes
+    /// sense for a filtered copy, so any exclude, include, no-git, or disabled
+    /// default excludes alongside an exact copy is rejected here, before
+    /// anything is touched.
+    ///
+    /// The mode is derived from the filter: a filter that cannot drop any
+    /// entry runs as an exact copy, the same path `copy_all` takes. On btrfs
+    /// and APFS that is a whole-tree snapshot or clone rather than a walk, so
+    /// it is faster but also inherits exact-copy semantics (for example a
+    /// btrfs snapshot does not descend into nested subvolumes). Elsewhere it
+    /// is the same walk minus the per-entry match.
+    pub(crate) fn copy_plan(&self) -> Result<(CopyMode, filter::CopyFilter)> {
         if self.copy_mode == CopyMode::All
-            && (!self.exclude.is_empty() || !self.include.is_empty() || self.no_git)
+            && (!self.exclude.is_empty()
+                || !self.include.is_empty()
+                || !self.git
+                || !self.default_excludes)
         {
             return Err(Error::InvalidOptions(
-                "exclude, include, and no-git cannot be combined with an exact copy".into(),
+                "exclude, include, no-git, and no-default-excludes cannot be combined with an exact copy"
+                    .into(),
             ));
         }
-        filter::CopyFilter::new(&self.exclude, &self.include, self.no_git)
+        // An exact copy applies no patterns, so its filter is built empty and
+        // the mode below falls out of the filter alone: the two never disagree.
+        let default_excludes = self.default_excludes && self.copy_mode == CopyMode::Filtered;
+        let filter = filter::CopyFilter::new(
+            &self.exclude,
+            &self.include,
+            !self.git,
+            default_excludes,
+        )?;
+        let copy_mode = if filter.can_exclude() {
+            CopyMode::Filtered
+        } else {
+            CopyMode::All
+        };
+        Ok((copy_mode, filter))
     }
 }
 
@@ -247,12 +296,12 @@ impl Manager {
         input: Create,
         options: CreateOptions,
     ) -> Result<PathBuf> {
-        let filter = options.copy_filter()?;
+        let (copy_mode, filter) = options.copy_plan()?;
         let requested = existing_directory(&input.from)?;
         let source = self.workspace_from(&requested)?;
         let from = source.path.clone();
         let git = git::check_source(&from)?;
-        if git.is_linked_worktree() && !options.no_git {
+        if git.is_linked_worktree() && options.git {
             return Err(Error::LinkedWorktreeRequiresNoGit(from));
         }
         let root = self.root(&source)?;
@@ -297,7 +346,7 @@ impl Manager {
 
         if let Err(error) =
             self.strategy
-                .copy_directory(&from, &destination, options.copy_mode, &filter)
+                .copy_directory(&from, &destination, copy_mode, &filter)
         {
             if destination.exists() {
                 let _ = self.strategy.remove_directory(&destination);

@@ -14,7 +14,8 @@ export interface CreateOptions extends Options {
   hooks?: boolean
   exclude?: string[]
   include?: string[]
-  noGit?: boolean
+  git?: boolean
+  defaultExcludes?: boolean
 }
 
 export interface RemoveOptions extends AtOptions {

@@ -51,6 +51,7 @@ rift create
 rift create --name parser-fix
 rift create --into /fast/rifts
 rift create --copy-all
+rift create --no-default-excludes --exclude fixtures
 rift create --no-hooks
 ```
 
@@ -58,7 +59,9 @@ rift create --no-hooks
 
 By default, creation omits heavyweight regenerable dependency and build artifacts such as `node_modules`, `target`, virtualenvs, framework caches, `dist`, `build`, and `coverage`. Manifests and lockfiles are preserved. Use `--copy-all` to keep the previous exact-copy behavior.
 
-Tune the excluded set per invocation with `--exclude <PATTERN>` and `--include <PATTERN>`. Both flags repeat and take gitignore patterns: a bare name like `fixtures` matches at any depth, a slash as in `build/cache` anchors to the workspace root, and `**` matches across segments. `--exclude` adds a pattern on top of the defaults; `--include` is a gitignore negation that keeps a path a default (or an earlier `--exclude`) would otherwise drop. Later patterns win, so `--include` overrides `--exclude` for the same path. For example, `rift create --exclude fixtures --include dist` omits `fixtures/` everywhere but keeps `dist/`. As in gitignore, a path *inside* an excluded directory cannot be re-included on its own (`--include dist/bundle.js` does nothing while `dist/` is excluded) — re-include the directory instead. Nothing inside the copied `.git` is ever filtered, so a branch or pack named like an excluded artifact is safe. An unparseable pattern is an error, and neither flag may be combined with `--copy-all`.
+Tune the excluded set per invocation with `--exclude <PATTERN>` and `--include <PATTERN>`. Both flags repeat and take gitignore patterns: a bare name like `fixtures` matches at any depth, a slash as in `build/cache` anchors to the workspace root, and `**` matches across segments. `--exclude` adds a pattern on top of the defaults (see `--no-default-excludes` below to drop them); `--include` is a gitignore negation that keeps a path a default (or an earlier `--exclude`) would otherwise drop. Later patterns win, so `--include` overrides `--exclude` for the same path. For example, `rift create --exclude fixtures --include dist` omits `fixtures/` everywhere but keeps `dist/`. As in gitignore, a path *inside* an excluded directory cannot be re-included on its own (`--include dist/bundle.js` does nothing while `dist/` is excluded) — re-include the directory instead. Nothing inside the copied `.git` is ever filtered, so a branch or pack named like an excluded artifact is safe. An unparseable pattern is an error, and neither flag may be combined with `--copy-all`.
+
+`--no-default-excludes` turns the built-in excluded set off, so only your own `--exclude`, `--include`, and `--no-git` apply. For example, `rift create --no-default-excludes --exclude fixtures` copies everything, including `node_modules`, except `fixtures/`. When nothing is left that can drop an entry (no non-blank `--exclude` and no `--no-git`), rift takes the same exact-copy path as `--copy-all`: a whole-tree snapshot on btrfs or clone on APFS, with the same behavior (for example a btrfs snapshot does not descend into nested subvolumes). Like the other filter flags, it cannot be combined with `--copy-all`.
 
 `--no-git` drops the workspace's own top-level `.git` from the copy, so the new workspace is a plain directory with no Git history or branch. Nested `.git` entries (submodules, vendored repositories) are ordinary content and are kept. It is also how you copy a **linked Git worktree** — a checkout made with `git worktree add`, whose `.git` is a pointer file into another repository. Those sources are refused without `--no-git`, because a copied pointer would alias the original worktree's Git state. Note that a worktree has no `info/exclude` of its own, so to keep the `.rift` marker out of `git status` rift adds `/.rift` to the **main repository's** `.git/info/exclude`, which then applies to every worktree of that repository. `--no-git` cannot be combined with `--copy-all`.
 
@@ -167,7 +170,7 @@ With Node's permission model, also pass `--allow-ffi`.
 
 ```ts
 init(options?: { at?: string; database?: string }): null
-create(options?: { from?: string; name?: string; into?: string; copyAll?: boolean; hooks?: boolean; exclude?: string[]; include?: string[]; noGit?: boolean; database?: string }): string
+create(options?: { from?: string; name?: string; into?: string; copyAll?: boolean; hooks?: boolean; exclude?: string[]; include?: string[]; git?: boolean; defaultExcludes?: boolean; database?: string }): string
 remove(options?: { at?: string; all?: false; hooks?: boolean; database?: string }): void
 remove(options: { at?: string; all: true; hooks?: boolean; database?: string }): string[]
 list(options?: { of?: string; database?: string }): string[]

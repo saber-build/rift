@@ -25,8 +25,9 @@ enum Command {
         hooks: Option<bool>,
         exclude: Option<Vec<String>>,
         include: Option<Vec<String>>,
-        #[serde(rename = "noGit")]
-        no_git: Option<bool>,
+        git: Option<bool>,
+        #[serde(rename = "defaultExcludes")]
+        default_excludes: Option<bool>,
     },
     Remove {
         at: PathBuf,
@@ -132,7 +133,8 @@ fn execute(input: &str) -> Result<Value, Failure> {
             hooks,
             exclude,
             include,
-            no_git,
+            git,
+            default_excludes,
         } => manager
             .create_with_options(
                 Create::new(from).with_name(name).with_storage(into),
@@ -149,7 +151,8 @@ fn execute(input: &str) -> Result<Value, Failure> {
                     })
                     .exclude(exclude.unwrap_or_default())
                     .include(include.unwrap_or_default())
-                    .no_git(no_git.unwrap_or(false)),
+                    .git(git.unwrap_or(true))
+                    .default_excludes(default_excludes.unwrap_or(true)),
             )
             .map(|path| Value::Path(Some(path)))
             .map_err(Failure::from),
@@ -351,18 +354,23 @@ mod tests {
     }
 
     #[test]
-    fn no_git_is_accepted_by_the_protocol_and_its_error_has_a_code() {
+    fn git_is_accepted_by_the_protocol_and_its_error_has_a_code() {
         let request = serde_json::from_str::<Request>(
-            r#"{"command": "create", "from": "/tmp/app", "noGit": true}"#,
+            r#"{"command": "create", "from": "/tmp/app", "git": false}"#,
         )
         .unwrap();
         assert!(matches!(
             request.command,
             Command::Create {
-                no_git: Some(true),
+                git: Some(false),
                 ..
             }
         ));
+
+        let request =
+            serde_json::from_str::<Request>(r#"{"command": "create", "from": "/tmp/app"}"#)
+                .unwrap();
+        assert!(matches!(request.command, Command::Create { git: None, .. }));
 
         let response = serde_json::to_value(Response::Error {
             error: Error::LinkedWorktreeRequiresNoGit(PathBuf::from("/tmp/wt")).into(),
@@ -370,6 +378,35 @@ mod tests {
         .unwrap();
         assert_eq!(response["error"]["code"], "linked_worktree_requires_no_git");
         assert_eq!(response["error"]["path"], "/tmp/wt");
+    }
+
+    #[test]
+    fn default_excludes_is_accepted_by_the_protocol() {
+        let request = serde_json::from_str::<Request>(
+            r#"{"command": "create", "from": "/tmp/app", "defaultExcludes": false}"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            request.command,
+            Command::Create {
+                default_excludes: Some(false),
+                ..
+            }
+        ));
+
+        let request = serde_json::from_str::<Request>(
+            r#"{"command": "create", "from": "/tmp/app", "defaultExcludes": null}"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            request.command,
+            Command::Create {
+                default_excludes: None,
+                ..
+            }
+        ));
     }
 
     #[test]

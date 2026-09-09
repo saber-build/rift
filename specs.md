@@ -37,7 +37,8 @@ create(input: {
   hooks?: boolean
   exclude?: string[]
   include?: string[]
-  noGit?: boolean
+  git?: boolean
+  defaultExcludes?: boolean
 }): AbsolutePath
 ```
 
@@ -49,8 +50,10 @@ Default behavior:
 - Copy the workspace while excluding known heavyweight regenerable dependency, build, and cache artifacts.
 - Preserve manifests, lockfiles, dirty files, staged files, untracked files, and ignored files that are not part of the built-in excluded artifact set.
 - `copyAll` opts into exact copying, including dependency and build artifacts.
-- `exclude` and `include` are gitignore patterns layered onto the built-in excluded set: each `exclude` adds an ignore pattern and each `include` adds a negation, with later patterns winning so an `include` re-includes a path a default or earlier `exclude` would drop. Patterns follow gitignore path rules (a bare name matches at any depth, a mid-pattern slash anchors to the workspace root, `**` spans segments), blank patterns are ignored, a leading `#` or `!` is part of the path rather than a comment or negation, an unparseable pattern fails with `InvalidFilter`, and combining either with `copyAll` fails with `InvalidOptions`. As in gitignore, a path beneath an excluded directory cannot be re-included on its own. Entries at or under `.git` are never subject to these patterns. On the CLI these are the repeatable `--exclude <PATTERN>` and `--include <PATTERN>` flags; the FFI protocol accepts `exclude` and `include` string arrays.
-- `noGit` excludes the workspace's own top-level `.git` (directory or pointer file; nested `.git` entries are kept) so the new workspace is a plain directory. It is enforced structurally, not by pattern order, so no `include` can undo it. The copy's Git steps (marker hiding, `HEAD` detaching) run only when the copy actually contains a `.git` directory. Combining `noGit` with `copyAll` fails with `InvalidOptions`. A linked Git worktree source — one whose `.git` is a `gitdir:` pointer file to a Git directory that has a `commondir` — requires `noGit` and otherwise fails with `LinkedWorktreeRequiresNoGit`. On the CLI this is `--no-git`.
+- `exclude` and `include` are gitignore patterns layered onto the built-in excluded set (or onto nothing when `defaultExcludes` is false): each `exclude` adds an ignore pattern and each `include` adds a negation, with later patterns winning so an `include` re-includes a path a default or earlier `exclude` would drop. Patterns follow gitignore path rules (a bare name matches at any depth, a mid-pattern slash anchors to the workspace root, `**` spans segments), blank patterns are ignored, a leading `#` or `!` is part of the path rather than a comment or negation, an unparseable pattern fails with `InvalidFilter`, and combining either with `copyAll` fails with `InvalidOptions`. As in gitignore, a path beneath an excluded directory cannot be re-included on its own. Entries at or under `.git` are never subject to these patterns. On the CLI these are the repeatable `--exclude <PATTERN>` and `--include <PATTERN>` flags; the FFI protocol accepts `exclude` and `include` string arrays.
+- `git` defaults to true. `git: false` excludes the workspace's own top-level `.git` (directory or pointer file; nested `.git` entries are kept) so the new workspace is a plain directory. It is enforced structurally, not by pattern order, so no `include` can undo it. The copy's Git steps (marker hiding, `HEAD` detaching) run only when the copy actually contains a `.git` directory. Combining `git: false` with `copyAll` fails with `InvalidOptions`. A linked Git worktree source — one whose `.git` is a `gitdir:` pointer file to a Git directory that has a `commondir` — requires `git: false` and otherwise fails with `LinkedWorktreeRequiresNoGit`. On the CLI this is `--no-git`.
+- `defaultExcludes` defaults to true and seeds the filter with the built-in excluded artifact set. `defaultExcludes: false` leaves only `exclude`, `include`, and `git: false` in effect, so a plain call copies everything. Combining it with `copyAll` fails with `InvalidOptions`, like the other filter options. On the CLI this is `--no-default-excludes`, which conflicts with `--copy-all`.
+- When the resulting filter can drop nothing — default excludes off, no non-blank `exclude`, and `git` left on — the copy runs as an exact copy, the same path `copyAll` takes. On btrfs and APFS that is a whole-tree snapshot or clone instead of a walk, so it is faster and carries exact-copy semantics (a btrfs snapshot does not descend into nested subvolumes; unsupported entry types are not rejected per entry). On other backends it is the same walk without the per-entry match. `include` negations never prevent this.
 - `hooks` defaults to true and runs `.rift.toml` precreate hooks before copying and postcreate hooks after workspace creation, Git preparation, and registry insertion. `hooks: false` skips config loading and hook execution.
 - Detach `HEAD` in the new workspace.
 - Return the path of the new workspace.
@@ -204,7 +207,7 @@ When registering or creating from a Git repository:
 
 Refuse creation from a Git repository when:
 
-- It is a linked Git worktree whose `.git` is a `gitdir:` pointer file and `noGit` was not requested. Copying the pointer would alias the original worktree's `HEAD` and index; with `noGit` the copy is a plain directory and is allowed.
+- It is a linked Git worktree whose `.git` is a `gitdir:` pointer file and `git: false` was not requested. Copying the pointer would alias the original worktree's `HEAD` and index; with `git: false` the copy is a plain directory and is allowed.
 - Its `.git` is a `gitdir:` pointer whose target does not exist (a stale pointer), or whose target has no `commondir` (a submodule checkout). Both are refused before anything is written.
 - A merge, rebase, cherry-pick, revert, or bisect is in progress (for a linked worktree this state is checked in its own Git directory).
 - Git lock or inconsistent index state makes an exact safe copy unclear.

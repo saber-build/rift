@@ -238,6 +238,79 @@ fn create_honors_custom_exclude_and_include() {
 }
 
 #[test]
+fn create_without_default_excludes_preserves_regenerable_artifacts() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    fs::create_dir_all(source.join("node_modules/pkg")).unwrap();
+    fs::write(source.join("node_modules/pkg/index.js"), "module").unwrap();
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+
+    let child = manager
+        .create_with_options(
+            create_input(source.clone(), "everything"),
+            create_options(CopyMode::Filtered, HookMode::Run).default_excludes(false),
+        )
+        .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(child.join("node_modules/pkg/index.js")).unwrap(),
+        "module"
+    );
+}
+
+#[test]
+fn create_without_default_excludes_still_honors_custom_excludes() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    fs::create_dir_all(source.join("fixtures")).unwrap();
+    fs::write(source.join("fixtures/large.bin"), "data").unwrap();
+    fs::create_dir_all(source.join("node_modules/pkg")).unwrap();
+    fs::write(source.join("node_modules/pkg/index.js"), "module").unwrap();
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+
+    let child = manager
+        .create_with_options(
+            create_input(source.clone(), "filtered"),
+            create_options(CopyMode::Filtered, HookMode::Run)
+                .default_excludes(false)
+                .exclude(vec!["fixtures".to_owned()]),
+        )
+        .unwrap();
+
+    assert!(!child.join("fixtures").exists());
+    assert_eq!(
+        fs::read_to_string(child.join("node_modules/pkg/index.js")).unwrap(),
+        "module"
+    );
+}
+
+#[test]
+fn copy_plan_promotes_a_filter_that_excludes_nothing_to_an_exact_copy() {
+    let mode = |options: CreateOptions| options.copy_plan().unwrap().0;
+    let without_defaults = || CreateOptions::default().default_excludes(false);
+
+    assert_eq!(mode(without_defaults()), CopyMode::All);
+    // A negation cannot drop anything, so it does not keep the walk.
+    assert_eq!(
+        mode(without_defaults().include(vec!["dist".to_owned()])),
+        CopyMode::All
+    );
+
+    assert_eq!(mode(CreateOptions::default()), CopyMode::Filtered);
+    assert_eq!(
+        mode(without_defaults().exclude(vec!["fixtures".to_owned()])),
+        CopyMode::Filtered
+    );
+    assert_eq!(mode(without_defaults().git(false)), CopyMode::Filtered);
+    assert_eq!(
+        mode(CreateOptions::default().copy_mode(CopyMode::All)),
+        CopyMode::All
+    );
+}
+
+#[test]
 fn create_rejects_filters_combined_with_copy_all() {
     let temp = TempDir::new().unwrap();
     let source = source(&temp);
@@ -248,6 +321,22 @@ fn create_rejects_filters_combined_with_copy_all() {
         manager.create_with_options(
             create_input(source.clone(), "child"),
             create_options(CopyMode::All, HookMode::Run).exclude(vec!["fixtures".to_owned()]),
+        ),
+        Err(Error::InvalidOptions(_))
+    ));
+}
+
+#[test]
+fn create_rejects_disabled_default_excludes_combined_with_copy_all() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+
+    assert!(matches!(
+        manager.create_with_options(
+            create_input(source.clone(), "child"),
+            create_options(CopyMode::All, HookMode::Run).default_excludes(false),
         ),
         Err(Error::InvalidOptions(_))
     ));
@@ -292,7 +381,7 @@ fn create_from_linked_worktree_with_no_git_yields_a_plain_copy() {
     let child = manager
         .create_with_options(
             create_input(linked.clone(), "child"),
-            create_options(CopyMode::Filtered, HookMode::Run).no_git(true),
+            create_options(CopyMode::Filtered, HookMode::Run).git(false),
         )
         .unwrap();
 
@@ -320,7 +409,7 @@ fn create_no_git_strips_git_from_a_normal_repository() {
     let child = manager
         .create_with_options(
             create_input(source.clone(), "child"),
-            create_options(CopyMode::Filtered, HookMode::Run).no_git(true),
+            create_options(CopyMode::Filtered, HookMode::Run).git(false),
         )
         .unwrap();
 
@@ -338,7 +427,7 @@ fn create_rejects_no_git_combined_with_copy_all() {
     assert!(matches!(
         manager.create_with_options(
             create_input(source.clone(), "child"),
-            create_options(CopyMode::All, HookMode::Run).no_git(true),
+            create_options(CopyMode::All, HookMode::Run).git(false),
         ),
         Err(Error::InvalidOptions(_))
     ));
@@ -1172,7 +1261,7 @@ fn stale_worktree_pointer_is_refused_without_side_effects() {
     assert!(matches!(
         manager.create_with_options(
             Create::new(source.clone()).named("linked-worktree"),
-            create_options(CopyMode::Filtered, HookMode::Run).no_git(true),
+            create_options(CopyMode::Filtered, HookMode::Run).git(false),
         ),
         Err(Error::UnsafeGit(_))
     ));

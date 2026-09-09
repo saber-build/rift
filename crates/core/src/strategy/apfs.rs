@@ -355,7 +355,8 @@ mod tests {
                 &source,
                 &destination,
                 CopyMode::Filtered,
-                &CopyFilter::new(&["fixtures".to_owned()], &["dist".to_owned()], false).unwrap(),
+                &CopyFilter::new(&["fixtures".to_owned()], &["dist".to_owned()], false, true)
+                    .unwrap(),
             )
             .unwrap();
 

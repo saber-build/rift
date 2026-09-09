@@ -106,6 +106,8 @@ enum Command {
         include: Vec<String>,
         #[arg(long, conflicts_with = "copy_all")]
         no_git: bool,
+        #[arg(long, conflicts_with = "copy_all")]
+        no_default_excludes: bool,
     },
     Remove {
         at: Option<PathBuf>,
@@ -227,6 +229,7 @@ fn run() -> Result<()> {
             exclude,
             include,
             no_git,
+            no_default_excludes,
         } => {
             let destination = manager.create_with_options(
                 Create::new(from.unwrap_or(std::env::current_dir()?))
@@ -245,7 +248,8 @@ fn run() -> Result<()> {
                     })
                     .exclude(exclude)
                     .include(include)
-                    .no_git(no_git),
+                    .git(!no_git)
+                    .default_excludes(!no_default_excludes),
             )?;
             if cli.shell_cwd {
                 eprintln!("created {}", destination.display());
@@ -492,6 +496,31 @@ mod tests {
         assert!(matches!(cli.command, Command::Create { no_git: true, .. }));
 
         assert!(Cli::try_parse_from(["rift", "create", "--copy-all", "--no-git"]).is_err());
+    }
+
+    #[test]
+    fn create_command_accepts_no_default_excludes_and_rejects_it_with_copy_all() {
+        let cli = Cli::try_parse_from(["rift", "create"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Create {
+                no_default_excludes: false,
+                ..
+            }
+        ));
+
+        let cli = Cli::try_parse_from(["rift", "create", "--no-default-excludes"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Create {
+                no_default_excludes: true,
+                ..
+            }
+        ));
+
+        assert!(
+            Cli::try_parse_from(["rift", "create", "--copy-all", "--no-default-excludes"]).is_err()
+        );
     }
 
     #[test]
