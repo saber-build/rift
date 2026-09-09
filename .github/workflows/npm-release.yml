@@ -74,13 +74,13 @@ jobs:
 
       - name: Populate prebuild
         shell: bash
-        run: node scripts/prepare-npm-prebuild.mjs "npm/rift-snapshot/prebuilds/${{ matrix.platform }}" "target/${{ matrix.target }}/release/${{ matrix.executable }}" "target/${{ matrix.target }}/release/${{ matrix.library }}"
+        run: node scripts/prepare-npm-prebuild.mjs "npm/@saber-build/rift/prebuilds/${{ matrix.platform }}" "target/${{ matrix.target }}/release/${{ matrix.executable }}" "target/${{ matrix.target }}/release/${{ matrix.library }}"
 
       - name: Upload prebuild
         uses: actions/upload-artifact@v4
         with:
           name: npm-prebuild-${{ matrix.platform }}
-          path: npm/rift-snapshot/prebuilds/${{ matrix.platform }}
+          path: npm/@saber-build/rift/prebuilds/${{ matrix.platform }}
           if-no-files-found: error
 
   publish:
@@ -104,28 +104,28 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: npm-prebuild-linux-x64
-          path: npm/rift-snapshot/prebuilds/linux-x64
+          path: npm/@saber-build/rift/prebuilds/linux-x64
 
       - name: Download macOS x64 prebuild
         uses: actions/download-artifact@v4
         with:
           name: npm-prebuild-darwin-x64
-          path: npm/rift-snapshot/prebuilds/darwin-x64
+          path: npm/@saber-build/rift/prebuilds/darwin-x64
 
       - name: Download macOS arm64 prebuild
         uses: actions/download-artifact@v4
         with:
           name: npm-prebuild-darwin-arm64
-          path: npm/rift-snapshot/prebuilds/darwin-arm64
+          path: npm/@saber-build/rift/prebuilds/darwin-arm64
 
       - name: Download Windows x64 prebuild
         uses: actions/download-artifact@v4
         with:
           name: npm-prebuild-windows-x64
-          path: npm/rift-snapshot/prebuilds/windows-x64
+          path: npm/@saber-build/rift/prebuilds/windows-x64
 
       - name: Restore executable permissions
-        run: chmod +x npm/rift-snapshot/prebuilds/linux-x64/* npm/rift-snapshot/prebuilds/darwin-x64/* npm/rift-snapshot/prebuilds/darwin-arm64/*
+        run: chmod +x npm/@saber-build/rift/prebuilds/linux-x64/* npm/@saber-build/rift/prebuilds/darwin-x64/* npm/@saber-build/rift/prebuilds/darwin-arm64/*
 
       - name: Publish launcher package
-        run: npm publish ./npm/rift-snapshot --provenance
+        run: npm publish ./npm/@saber-build/rift --provenance
