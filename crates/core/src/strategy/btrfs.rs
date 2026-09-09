@@ -5,6 +5,7 @@ use super::reflink::{
     MetadataTarget, copy_metadata_linux, import_directory_linux, import_directory_linux_filtered,
 };
 use super::{Strategy, StrategyInit};
+use crate::filter::CopyFilter;
 use crate::{CopyMode, Error, InitProgress, Result};
 use std::fs;
 use std::path::Path;
@@ -12,8 +13,14 @@ use std::path::Path;
 pub(super) struct BtrfsStrategy;
 
 impl Strategy for BtrfsStrategy {
-    fn copy_directory(&self, from: &Path, to: &Path, mode: CopyMode) -> Result<()> {
-        copy_directory_linux(from, to, mode)
+    fn copy_directory(
+        &self,
+        from: &Path,
+        to: &Path,
+        mode: CopyMode,
+        filter: &CopyFilter,
+    ) -> Result<()> {
+        copy_directory_linux(from, to, mode, filter)
     }
 
     fn initialize_directory(
@@ -29,7 +36,12 @@ impl Strategy for BtrfsStrategy {
     }
 }
 
-fn copy_directory_linux(from: &Path, to: &Path, mode: CopyMode) -> Result<()> {
+fn copy_directory_linux(
+    from: &Path,
+    to: &Path,
+    mode: CopyMode,
+    filter: &CopyFilter,
+) -> Result<()> {
     if !is_btrfs_filesystem(from)? {
         return Err(Error::CowUnavailable(format!(
             "Linux snapshot creation requires btrfs; {} is on another filesystem",
@@ -41,14 +53,14 @@ fn copy_directory_linux(from: &Path, to: &Path, mode: CopyMode) -> Result<()> {
     }
     match mode {
         CopyMode::All => create_btrfs_snapshot(from, to),
-        CopyMode::Filtered => create_filtered_btrfs_subvolume(from, to),
+        CopyMode::Filtered => create_filtered_btrfs_subvolume(from, to, filter),
     }
 }
 
 #[cfg(target_os = "linux")]
-fn create_filtered_btrfs_subvolume(from: &Path, to: &Path) -> Result<()> {
+fn create_filtered_btrfs_subvolume(from: &Path, to: &Path, filter: &CopyFilter) -> Result<()> {
     create_btrfs_subvolume(to)?;
-    import_directory_linux_filtered(from, to, &mut |_| {})?;
+    import_directory_linux_filtered(from, to, &mut |_| {}, filter)?;
     copy_metadata_linux(from, to, MetadataTarget::FileOrDirectory)
 }
 
@@ -386,7 +398,7 @@ mod linux_tests {
         create_btrfs_subvolume(&source).unwrap();
         fs::write(source.join("file.txt"), "shared before mutation").unwrap();
 
-        copy_directory_linux(&source, &snapshot, CopyMode::All).unwrap();
+        copy_directory_linux(&source, &snapshot, CopyMode::All, &CopyFilter::default()).unwrap();
         assert!(is_btrfs_subvolume(&snapshot).unwrap());
         assert_eq!(
             fs::read_to_string(snapshot.join("file.txt")).unwrap(),
@@ -394,7 +406,8 @@ mod linux_tests {
         );
         assert_copy_diverges_after_mutation(&source.join("file.txt"), &snapshot.join("file.txt"));
 
-        copy_directory_linux(&source, &filtered, CopyMode::Filtered).unwrap();
+        copy_directory_linux(&source, &filtered, CopyMode::Filtered, &CopyFilter::default())
+            .unwrap();
         assert!(is_btrfs_subvolume(&filtered).unwrap());
         assert_copy_diverges_after_mutation(&source.join("file.txt"), &filtered.join("file.txt"));
 
@@ -416,7 +429,12 @@ mod linux_tests {
             Err(Error::CowUnavailable(_))
         ));
         assert!(matches!(
-            copy_directory_linux(temp.path(), &temp.path().join("snapshot"), CopyMode::All),
+            copy_directory_linux(
+                temp.path(),
+                &temp.path().join("snapshot"),
+                CopyMode::All,
+                &CopyFilter::default(),
+            ),
             Err(Error::CowUnavailable(_))
         ));
 

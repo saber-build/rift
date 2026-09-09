@@ -100,6 +100,12 @@ enum Command {
         copy_all: bool,
         #[arg(long)]
         no_hooks: bool,
+        #[arg(long, value_name = "PATTERN", conflicts_with = "copy_all")]
+        exclude: Vec<String>,
+        #[arg(long, value_name = "PATTERN", conflicts_with = "copy_all")]
+        include: Vec<String>,
+        #[arg(long, conflicts_with = "copy_all")]
+        no_git: bool,
     },
     Remove {
         at: Option<PathBuf>,
@@ -141,6 +147,10 @@ fn error_message(error: &rift::Error) -> String {
         rift::Error::MissingMarker(_) => {
             "this workspace is missing its `.rift` marker; run `rift init` to restore it".into()
         }
+        rift::Error::LinkedWorktreeRequiresNoGit(path) => format!(
+            "{} is a linked Git worktree; pass `--no-git` to copy it without its Git data",
+            path.display()
+        ),
         _ => error.to_string(),
     }
 }
@@ -214,6 +224,9 @@ fn run() -> Result<()> {
             into,
             copy_all,
             no_hooks,
+            exclude,
+            include,
+            no_git,
         } => {
             let destination = manager.create_with_options(
                 Create::new(from.unwrap_or(std::env::current_dir()?))
@@ -229,7 +242,10 @@ fn run() -> Result<()> {
                         HookMode::Skip
                     } else {
                         HookMode::Run
-                    }),
+                    })
+                    .exclude(exclude)
+                    .include(include)
+                    .no_git(no_git),
             )?;
             if cli.shell_cwd {
                 eprintln!("created {}", destination.display());
@@ -434,6 +450,58 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn create_command_collects_repeated_exclude_and_include_flags() {
+        let cli = Cli::try_parse_from([
+            "rift",
+            "create",
+            "--exclude",
+            "fixtures",
+            "--exclude",
+            "tmp",
+            "--include",
+            "dist",
+        ])
+        .unwrap();
+
+        let Command::Create {
+            exclude, include, ..
+        } = cli.command
+        else {
+            panic!("expected a create command");
+        };
+        assert_eq!(exclude, vec!["fixtures", "tmp"]);
+        assert_eq!(include, vec!["dist"]);
+    }
+
+    #[test]
+    fn create_command_rejects_filters_with_copy_all() {
+        assert!(
+            Cli::try_parse_from(["rift", "create", "--copy-all", "--exclude", "fixtures"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["rift", "create", "--copy-all", "--include", "dist"]).is_err()
+        );
+    }
+
+    #[test]
+    fn create_command_accepts_no_git_and_rejects_it_with_copy_all() {
+        let cli = Cli::try_parse_from(["rift", "create", "--no-git"]).unwrap();
+        assert!(matches!(cli.command, Command::Create { no_git: true, .. }));
+
+        assert!(Cli::try_parse_from(["rift", "create", "--copy-all", "--no-git"]).is_err());
+    }
+
+    #[test]
+    fn linked_worktree_guidance_is_rendered_by_the_cli() {
+        assert_eq!(
+            error_message(&rift::Error::LinkedWorktreeRequiresNoGit(PathBuf::from(
+                "/tmp/wt"
+            ))),
+            "/tmp/wt is a linked Git worktree; pass `--no-git` to copy it without its Git data"
+        );
     }
 
     #[test]

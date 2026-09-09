@@ -7,12 +7,18 @@ use walkdir::WalkDir;
 pub(super) struct LinuxReflinkStrategy;
 
 impl Strategy for LinuxReflinkStrategy {
-    fn copy_directory(&self, from: &Path, to: &Path, mode: CopyMode) -> Result<()> {
+    fn copy_directory(
+        &self,
+        from: &Path,
+        to: &Path,
+        mode: CopyMode,
+        filter: &CopyFilter,
+    ) -> Result<()> {
         let destination_parent = same_filesystem_parent(from, to)?;
         verify_reflinks_linux(destination_parent)?;
         match mode {
             CopyMode::All => clone_directory_linux(from, to),
-            CopyMode::Filtered => clone_directory_linux_filtered(from, to),
+            CopyMode::Filtered => clone_directory_linux_filtered(from, to, filter),
         }
     }
 
@@ -48,9 +54,13 @@ pub(super) fn clone_directory_linux(from: &Path, to: &Path) -> Result<()> {
     copy_metadata_linux(from, to, MetadataTarget::FileOrDirectory)
 }
 
-pub(super) fn clone_directory_linux_filtered(from: &Path, to: &Path) -> Result<()> {
+pub(super) fn clone_directory_linux_filtered(
+    from: &Path,
+    to: &Path,
+    filter: &CopyFilter,
+) -> Result<()> {
     fs::create_dir(to)?;
-    import_directory_linux_filtered(from, to, &mut |_| {})?;
+    import_directory_linux_filtered(from, to, &mut |_| {}, filter)?;
     copy_metadata_linux(from, to, MetadataTarget::FileOrDirectory)
 }
 
@@ -66,15 +76,16 @@ pub(super) fn import_directory_linux_filtered(
     from: &Path,
     to: &Path,
     progress: &mut dyn FnMut(InitProgress),
+    filter: &CopyFilter,
 ) -> Result<()> {
-    import_directory_linux_with_filter(from, to, progress, Some(CopyFilter))
+    import_directory_linux_with_filter(from, to, progress, Some(filter))
 }
 
 fn import_directory_linux_with_filter(
     from: &Path,
     to: &Path,
     progress: &mut dyn FnMut(InitProgress),
-    filter: Option<CopyFilter>,
+    filter: Option<&CopyFilter>,
 ) -> Result<()> {
     use std::collections::HashMap;
     use std::os::unix::fs::MetadataExt;
@@ -85,14 +96,7 @@ fn import_directory_linux_with_filter(
         .min_depth(1)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|entry| {
-            filter.map_or(true, |filter| {
-                entry
-                    .path()
-                    .strip_prefix(from)
-                    .map_or(true, |path| !filter.excludes(path))
-            })
-        })
+        .filter_entry(|entry| filter.map_or(true, |filter| !filter.excludes_entry(from, entry)))
         .zip(1..)
     {
         let entry = entry?;
@@ -359,7 +363,7 @@ mod tests {
         std::os::unix::fs::symlink("file.txt", nested.join("link.txt")).unwrap();
 
         LinuxStrategy
-            .copy_directory(&source, &destination, CopyMode::All)
+            .copy_directory(&source, &destination, CopyMode::All, &CopyFilter::default())
             .unwrap();
 
         assert_eq!(
@@ -409,7 +413,12 @@ mod tests {
         }
 
         assert!(matches!(
-            LinuxStrategy.copy_directory(&source, &other.path().join("destination"), CopyMode::All),
+            LinuxStrategy.copy_directory(
+                &source,
+                &other.path().join("destination"),
+                CopyMode::All,
+                &CopyFilter::default(),
+            ),
             Err(Error::CowUnavailable(_))
         ));
     }
@@ -424,7 +433,12 @@ mod tests {
         fs::create_dir(&source).unwrap();
 
         assert!(matches!(
-            LinuxStrategy.copy_directory(&source, &destination, CopyMode::All),
+            LinuxStrategy.copy_directory(
+                &source,
+                &destination,
+                CopyMode::All,
+                &CopyFilter::default(),
+            ),
             Err(Error::CowUnavailable(_))
         ));
         assert!(!destination.exists());

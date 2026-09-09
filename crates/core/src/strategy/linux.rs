@@ -1,4 +1,5 @@
 use super::{Strategy, StrategyInit, btrfs::BtrfsStrategy, reflink::LinuxReflinkStrategy};
+use crate::filter::CopyFilter;
 use crate::{CopyMode, Error, InitProgress, Result};
 use std::fs;
 use std::path::Path;
@@ -6,10 +7,16 @@ use std::path::Path;
 pub(super) struct LinuxStrategy;
 
 impl Strategy for LinuxStrategy {
-    fn copy_directory(&self, from: &Path, to: &Path, mode: CopyMode) -> Result<()> {
+    fn copy_directory(
+        &self,
+        from: &Path,
+        to: &Path,
+        mode: CopyMode,
+        filter: &CopyFilter,
+    ) -> Result<()> {
         match filesystem(from)? {
-            Filesystem::Btrfs => BtrfsStrategy.copy_directory(from, to, mode),
-            Filesystem::Other => LinuxReflinkStrategy.copy_directory(from, to, mode),
+            Filesystem::Btrfs => BtrfsStrategy.copy_directory(from, to, mode, filter),
+            Filesystem::Other => LinuxReflinkStrategy.copy_directory(from, to, mode, filter),
         }
     }
 

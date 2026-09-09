@@ -23,6 +23,10 @@ enum Command {
         #[serde(rename = "copyAll")]
         copy_all: Option<bool>,
         hooks: Option<bool>,
+        exclude: Option<Vec<String>>,
+        include: Option<Vec<String>>,
+        #[serde(rename = "noGit")]
+        no_git: Option<bool>,
     },
     Remove {
         at: PathBuf,
@@ -93,6 +97,11 @@ impl From<Error> for Failure {
             Error::MissingRift(path) => ("missing_rift", Some(path.clone())),
             Error::InsideSource(path) => ("inside_source", Some(path.clone())),
             Error::InvalidConfig { path, .. } => ("invalid_config", Some(path.clone())),
+            Error::InvalidFilter(_) => ("invalid_filter", None),
+            Error::InvalidOptions(_) => ("invalid_options", None),
+            Error::LinkedWorktreeRequiresNoGit(path) => {
+                ("linked_worktree_requires_no_git", Some(path.clone()))
+            }
             Error::HookFailed { path, .. } => ("hook_failed", Some(path.clone())),
         };
         Self {
@@ -121,6 +130,9 @@ fn execute(input: &str) -> Result<Value, Failure> {
             into,
             copy_all,
             hooks,
+            exclude,
+            include,
+            no_git,
         } => manager
             .create_with_options(
                 Create::new(from).with_name(name).with_storage(into),
@@ -134,7 +146,10 @@ fn execute(input: &str) -> Result<Value, Failure> {
                         HookMode::Run
                     } else {
                         HookMode::Skip
-                    }),
+                    })
+                    .exclude(exclude.unwrap_or_default())
+                    .include(include.unwrap_or_default())
+                    .no_git(no_git.unwrap_or(false)),
             )
             .map(|path| Value::Path(Some(path)))
             .map_err(Failure::from),
@@ -274,6 +289,87 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn exclude_and_include_are_accepted_by_the_protocol() {
+        let request = serde_json::from_str::<Request>(
+            r#"{
+                "command": "create",
+                "from": "/tmp/app",
+                "exclude": ["fixtures", "**/build/cache"],
+                "include": ["dist"]
+            }"#,
+        )
+        .unwrap();
+
+        let Command::Create {
+            exclude, include, ..
+        } = request.command
+        else {
+            panic!("expected a create command");
+        };
+        assert_eq!(exclude.unwrap(), vec!["fixtures", "**/build/cache"]);
+        assert_eq!(include.unwrap(), vec!["dist"]);
+    }
+
+    #[test]
+    fn null_exclude_and_include_are_accepted_like_other_optional_fields() {
+        let request = serde_json::from_str::<Request>(
+            r#"{"command": "create", "from": "/tmp/app", "exclude": null, "include": null}"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            request.command,
+            Command::Create {
+                exclude: None,
+                include: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn invalid_options_error_is_exposed_with_a_code() {
+        let response = serde_json::to_value(Response::Error {
+            error: Error::InvalidOptions("cannot combine".into()).into(),
+        })
+        .unwrap();
+
+        assert_eq!(response["error"]["code"], "invalid_options");
+    }
+
+    #[test]
+    fn invalid_filter_error_is_exposed_with_a_code() {
+        let response = serde_json::to_value(Response::Error {
+            error: Error::InvalidFilter("dangling '\\'".into()).into(),
+        })
+        .unwrap();
+
+        assert_eq!(response["error"]["code"], "invalid_filter");
+    }
+
+    #[test]
+    fn no_git_is_accepted_by_the_protocol_and_its_error_has_a_code() {
+        let request = serde_json::from_str::<Request>(
+            r#"{"command": "create", "from": "/tmp/app", "noGit": true}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            request.command,
+            Command::Create {
+                no_git: Some(true),
+                ..
+            }
+        ));
+
+        let response = serde_json::to_value(Response::Error {
+            error: Error::LinkedWorktreeRequiresNoGit(PathBuf::from("/tmp/wt")).into(),
+        })
+        .unwrap();
+        assert_eq!(response["error"]["code"], "linked_worktree_requires_no_git");
+        assert_eq!(response["error"]["path"], "/tmp/wt");
     }
 
     #[test]

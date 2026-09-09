@@ -7,19 +7,24 @@ use walkdir::WalkDir;
 pub(super) struct ApfsStrategy;
 
 impl Strategy for ApfsStrategy {
-    fn copy_directory(&self, from: &Path, to: &Path, mode: CopyMode) -> Result<()> {
+    fn copy_directory(
+        &self,
+        from: &Path,
+        to: &Path,
+        mode: CopyMode,
+        filter: &CopyFilter,
+    ) -> Result<()> {
         match mode {
             CopyMode::All => clone_path_apfs(from, to),
-            CopyMode::Filtered => clone_filtered_directory_apfs(from, to),
+            CopyMode::Filtered => clone_filtered_directory_apfs(from, to, filter),
         }
     }
 }
 
-fn clone_filtered_directory_apfs(from: &Path, to: &Path) -> Result<()> {
+fn clone_filtered_directory_apfs(from: &Path, to: &Path, filter: &CopyFilter) -> Result<()> {
     use std::collections::HashMap;
     use std::os::unix::fs::MetadataExt;
 
-    let filter = CopyFilter;
     let mut hard_links = HashMap::new();
     let mut directories = Vec::new();
     fs::create_dir(to)?;
@@ -27,12 +32,7 @@ fn clone_filtered_directory_apfs(from: &Path, to: &Path) -> Result<()> {
         .min_depth(1)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|entry| {
-            entry
-                .path()
-                .strip_prefix(from)
-                .map_or(true, |path| !filter.excludes(path))
-        })
+        .filter_entry(|entry| !filter.excludes_entry(from, entry))
     {
         let entry = entry?;
         let source = entry.path();
@@ -246,7 +246,7 @@ mod tests {
         let strategy = ApfsStrategy;
 
         strategy
-            .copy_directory(&source, &destination, CopyMode::All)
+            .copy_directory(&source, &destination, CopyMode::All, &CopyFilter::default())
             .unwrap();
         assert_eq!(
             fs::read_to_string(destination.join("nested/file.txt")).unwrap(),
@@ -265,7 +265,7 @@ mod tests {
             fs::create_dir(&source).unwrap();
             assert!(
                 ApfsStrategy
-                    .copy_directory(&source, &destination, CopyMode::All)
+                    .copy_directory(&source, &destination, CopyMode::All, &CopyFilter::default())
                     .is_ok()
             );
         }
@@ -290,7 +290,12 @@ mod tests {
         fs::write(source.join("node_modules/pkg/index.js"), "module").unwrap();
 
         ApfsStrategy
-            .copy_directory(&source, &destination, CopyMode::Filtered)
+            .copy_directory(
+                &source,
+                &destination,
+                CopyMode::Filtered,
+                &CopyFilter::default(),
+            )
             .unwrap();
 
         assert!(!destination.join("node_modules").exists());
@@ -329,6 +334,36 @@ mod tests {
         assert_eq!(
             fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
             0o750
+        );
+    }
+
+    #[test]
+    fn filtered_strategy_honors_configured_excludes() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir_all(source.join("fixtures")).unwrap();
+        fs::write(source.join("fixtures/large.bin"), "data").unwrap();
+        fs::create_dir_all(source.join("dist")).unwrap();
+        fs::write(source.join("dist/bundle.js"), "bundle").unwrap();
+        fs::create_dir_all(source.join("node_modules/pkg")).unwrap();
+        fs::write(source.join("node_modules/pkg/index.js"), "module").unwrap();
+
+        ApfsStrategy
+            .copy_directory(
+                &source,
+                &destination,
+                CopyMode::Filtered,
+                &CopyFilter::new(&["fixtures".to_owned()], &["dist".to_owned()], false).unwrap(),
+            )
+            .unwrap();
+
+        assert!(!destination.join("fixtures").exists());
+        assert!(!destination.join("node_modules").exists());
+        assert_eq!(
+            fs::read_to_string(destination.join("dist/bundle.js")).unwrap(),
+            "bundle"
         );
     }
 }

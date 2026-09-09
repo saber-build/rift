@@ -1,6 +1,7 @@
+use crate::filter::CopyFilter;
 use crate::{CopyMode, InitProgress, Result};
 #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
-use crate::{Error, filter::CopyFilter};
+use crate::Error;
 use std::fs;
 use std::path::Path;
 
@@ -14,7 +15,13 @@ mod linux;
 mod reflink;
 
 pub(crate) trait Strategy {
-    fn copy_directory(&self, from: &Path, to: &Path, mode: CopyMode) -> Result<()>;
+    fn copy_directory(
+        &self,
+        from: &Path,
+        to: &Path,
+        mode: CopyMode,
+        filter: &CopyFilter,
+    ) -> Result<()>;
 
     fn initialize_directory(
         &self,
@@ -53,7 +60,13 @@ struct UnsupportedStrategy;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 impl Strategy for UnsupportedStrategy {
-    fn copy_directory(&self, _from: &Path, _to: &Path, _mode: CopyMode) -> Result<()> {
+    fn copy_directory(
+        &self,
+        _from: &Path,
+        _to: &Path,
+        _mode: CopyMode,
+        _filter: &CopyFilter,
+    ) -> Result<()> {
         Err(Error::CowUnavailable(
             "no copy-on-write strategy has been implemented for this platform".into(),
         ))
@@ -82,20 +95,19 @@ pub(crate) struct TestStrategy;
 
 #[cfg(test)]
 impl Strategy for TestStrategy {
-    fn copy_directory(&self, from: &Path, to: &Path, mode: CopyMode) -> Result<()> {
+    fn copy_directory(
+        &self,
+        from: &Path,
+        to: &Path,
+        mode: CopyMode,
+        filter: &CopyFilter,
+    ) -> Result<()> {
         fs::create_dir(to)?;
-        let filter = CopyFilter;
         for entry in walkdir::WalkDir::new(from)
             .min_depth(1)
             .follow_links(false)
             .into_iter()
-            .filter_entry(|entry| {
-                mode == CopyMode::All
-                    || entry
-                        .path()
-                        .strip_prefix(from)
-                        .map_or(true, |path| !filter.excludes(path))
-            })
+            .filter_entry(|entry| mode == CopyMode::All || !filter.excludes_entry(from, entry))
         {
             let entry = entry?;
             let destination = to.join(
@@ -123,7 +135,13 @@ pub(crate) struct FailureStrategy;
 
 #[cfg(test)]
 impl Strategy for FailureStrategy {
-    fn copy_directory(&self, _from: &Path, _to: &Path, _mode: CopyMode) -> Result<()> {
+    fn copy_directory(
+        &self,
+        _from: &Path,
+        _to: &Path,
+        _mode: CopyMode,
+        _filter: &CopyFilter,
+    ) -> Result<()> {
         Err(Error::CowUnavailable("test failure".into()))
     }
 }

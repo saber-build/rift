@@ -12,6 +12,9 @@ export interface CreateOptions extends Options {
   into?: string
   copyAll?: boolean
   hooks?: boolean
+  exclude?: string[]
+  include?: string[]
+  noGit?: boolean
 }
 
 export interface RemoveOptions extends AtOptions {
@@ -41,6 +44,9 @@ export type RiftErrorCode =
   | "missing_rift"
   | "inside_source"
   | "invalid_config"
+  | "invalid_filter"
+  | "invalid_options"
+  | "linked_worktree_requires_no_git"
   | "hook_failed"
   | "invalid_request"
   | "panic"

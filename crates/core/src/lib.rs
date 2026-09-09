@@ -59,6 +59,12 @@ pub enum Error {
     InsideSource(PathBuf),
     #[error("invalid rift config at {path}: {message}")]
     InvalidConfig { path: PathBuf, message: String },
+    #[error("invalid exclude/include pattern: {0}")]
+    InvalidFilter(String),
+    #[error("invalid options: {0}")]
+    InvalidOptions(String),
+    #[error("linked Git worktree source requires the no-git option: {0}")]
+    LinkedWorktreeRequiresNoGit(PathBuf),
     #[error("{hook} hook failed at {path}: `{command}` {message}")]
     HookFailed {
         hook: String,
@@ -99,10 +105,13 @@ impl Create {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CreateOptions {
     pub copy_mode: CopyMode,
     pub hook_mode: HookMode,
+    pub exclude: Vec<String>,
+    pub include: Vec<String>,
+    pub no_git: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -126,6 +135,35 @@ impl CreateOptions {
     pub fn hook_mode(mut self, hook_mode: HookMode) -> Self {
         self.hook_mode = hook_mode;
         self
+    }
+
+    pub fn exclude(mut self, exclude: Vec<String>) -> Self {
+        self.exclude = exclude;
+        self
+    }
+
+    pub fn include(mut self, include: Vec<String>) -> Self {
+        self.include = include;
+        self
+    }
+
+    pub fn no_git(mut self, no_git: bool) -> Self {
+        self.no_git = no_git;
+        self
+    }
+
+    /// The filter these options describe. Filtering only makes sense for a
+    /// filtered copy, so any exclude, include, or no-git alongside an exact
+    /// copy is rejected here, before anything is touched.
+    pub(crate) fn copy_filter(&self) -> Result<filter::CopyFilter> {
+        if self.copy_mode == CopyMode::All
+            && (!self.exclude.is_empty() || !self.include.is_empty() || self.no_git)
+        {
+            return Err(Error::InvalidOptions(
+                "exclude, include, and no-git cannot be combined with an exact copy".into(),
+            ));
+        }
+        filter::CopyFilter::new(&self.exclude, &self.include, self.no_git)
     }
 }
 
@@ -209,10 +247,14 @@ impl Manager {
         input: Create,
         options: CreateOptions,
     ) -> Result<PathBuf> {
+        let filter = options.copy_filter()?;
         let requested = existing_directory(&input.from)?;
         let source = self.workspace_from(&requested)?;
         let from = source.path.clone();
         let git = git::check_source(&from)?;
+        if git.is_linked_worktree() && !options.no_git {
+            return Err(Error::LinkedWorktreeRequiresNoGit(from));
+        }
         let root = self.root(&source)?;
         let id = RiftId::new();
         let destination_parent = match input.into {
@@ -232,6 +274,12 @@ impl Manager {
         if destination.exists() {
             return Err(Error::AlreadyExists(destination));
         }
+        // Hide the source marker before any copying: it does not depend on the
+        // copy, and for a linked worktree it writes into the shared repository,
+        // so a failure here costs nothing instead of discarding a finished copy.
+        if let Some(exclude) = git.exclude_file(&from) {
+            git::hide_marker(&exclude)?;
+        }
         let config = match options.hook_mode {
             HookMode::Run => config::Config::load(&from)?,
             HookMode::Skip => config::Config::default(),
@@ -247,9 +295,9 @@ impl Manager {
             &source.id,
         )?;
 
-        if let Err(error) = self
-            .strategy
-            .copy_directory(&from, &destination, options.copy_mode)
+        if let Err(error) =
+            self.strategy
+                .copy_directory(&from, &destination, options.copy_mode, &filter)
         {
             if destination.exists() {
                 let _ = self.strategy.remove_directory(&destination);
@@ -259,12 +307,12 @@ impl Manager {
 
         let result: Result<()> = (|| {
             marker::write(&destination, &id)?;
-            if git.is_repository() {
-                git::hide_marker(&destination)?;
+            // Git fixups apply only when the copy actually carries a
+            // self-contained `.git` directory, i.e. it was not stripped by
+            // no-git and the source was not a worktree pointer.
+            if destination.join(".git").is_dir() {
+                git::hide_marker(&git::repository_exclude_file(&destination))?;
                 git::detach_destination(&destination)?;
-            }
-            if git.is_repository() {
-                git::hide_marker(&from)?;
             }
             self.registry.insert_child(&id, &source.id, &destination)?;
             Ok(())
@@ -303,10 +351,10 @@ impl Manager {
             } else {
                 marker::verify(&record.path, &record.id)?;
             }
-            let converted = self.strategy.initialize_directory(&at, &mut progress)?;
-            if git.is_repository() {
-                git::hide_marker(&at)?;
+            if let Some(exclude) = git.exclude_file(&at) {
+                git::hide_marker(&exclude)?;
             }
+            let converted = self.strategy.initialize_directory(&at, &mut progress)?;
             return Ok(match converted {
                 StrategyInit::AlreadyNative => InitOutcome::AlreadyInitialized,
                 StrategyInit::Converted => InitOutcome::Converted,
@@ -316,14 +364,17 @@ impl Manager {
             return Err(Error::MarkerMismatch(at));
         }
 
+        // Hide the marker before converting the directory so an unwritable
+        // exclude file fails early rather than leaving a converted but
+        // unregistered workspace behind.
+        if let Some(exclude) = git.exclude_file(&at) {
+            git::hide_marker(&exclude)?;
+        }
         let converted = self.strategy.initialize_directory(&at, &mut progress)?;
         progress(InitProgress::RegisteringWorkspace);
         let id = RiftId::new();
         let result = (|| {
             marker::write(&at, &id)?;
-            if git.is_repository() {
-                git::hide_marker(&at)?;
-            }
             self.registry.insert_root(&id, &at)?;
             Ok(match converted {
                 StrategyInit::AlreadyNative => InitOutcome::Registered,

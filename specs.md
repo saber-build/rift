@@ -35,6 +35,9 @@ create(input: {
   into?: AbsolutePath
   copyAll?: boolean
   hooks?: boolean
+  exclude?: string[]
+  include?: string[]
+  noGit?: boolean
 }): AbsolutePath
 ```
 
@@ -46,6 +49,8 @@ Default behavior:
 - Copy the workspace while excluding known heavyweight regenerable dependency, build, and cache artifacts.
 - Preserve manifests, lockfiles, dirty files, staged files, untracked files, and ignored files that are not part of the built-in excluded artifact set.
 - `copyAll` opts into exact copying, including dependency and build artifacts.
+- `exclude` and `include` are gitignore patterns layered onto the built-in excluded set: each `exclude` adds an ignore pattern and each `include` adds a negation, with later patterns winning so an `include` re-includes a path a default or earlier `exclude` would drop. Patterns follow gitignore path rules (a bare name matches at any depth, a mid-pattern slash anchors to the workspace root, `**` spans segments), blank patterns are ignored, a leading `#` or `!` is part of the path rather than a comment or negation, an unparseable pattern fails with `InvalidFilter`, and combining either with `copyAll` fails with `InvalidOptions`. As in gitignore, a path beneath an excluded directory cannot be re-included on its own. Entries at or under `.git` are never subject to these patterns. On the CLI these are the repeatable `--exclude <PATTERN>` and `--include <PATTERN>` flags; the FFI protocol accepts `exclude` and `include` string arrays.
+- `noGit` excludes the workspace's own top-level `.git` (directory or pointer file; nested `.git` entries are kept) so the new workspace is a plain directory. It is enforced structurally, not by pattern order, so no `include` can undo it. The copy's Git steps (marker hiding, `HEAD` detaching) run only when the copy actually contains a `.git` directory. Combining `noGit` with `copyAll` fails with `InvalidOptions`. A linked Git worktree source — one whose `.git` is a `gitdir:` pointer file to a Git directory that has a `commondir` — requires `noGit` and otherwise fails with `LinkedWorktreeRequiresNoGit`. On the CLI this is `--no-git`.
 - `hooks` defaults to true and runs `.rift.toml` precreate hooks before copying and postcreate hooks after workspace creation, Git preparation, and registry insertion. `hooks: false` skips config loading and hook execution.
 - Detach `HEAD` in the new workspace.
 - Return the path of the new workspace.
@@ -191,7 +196,7 @@ Git support is an integration for directories that contain repositories; it does
 
 When registering or creating from a Git repository:
 
-- Add `/.rift` to `.git/info/exclude` so the identity marker does not appear in local Git status.
+- Add `/.rift` to `.git/info/exclude` so the identity marker does not appear in local Git status. For a linked Git worktree the entry goes in the shared repository's `info/exclude` (resolved through the worktree's `gitdir:` pointer and `commondir`), so one entry covers the main checkout and every worktree. The source's entry is written before copying and before any `init` conversion, so an unwritable exclude file fails early rather than discarding a finished copy or leaving a converted but unregistered workspace.
 - Preserve staged, unstaged, untracked, ignored, and cached state for copied paths.
 - If `HEAD` resolves to a commit, detach `HEAD` in the created destination at that same commit.
 - Preserve the copied index and working tree state while detaching.
@@ -199,8 +204,9 @@ When registering or creating from a Git repository:
 
 Refuse creation from a Git repository when:
 
-- It is a linked Git worktree whose `.git` is not an independent directory.
-- A merge, rebase, cherry-pick, revert, or bisect is in progress.
+- It is a linked Git worktree whose `.git` is a `gitdir:` pointer file and `noGit` was not requested. Copying the pointer would alias the original worktree's `HEAD` and index; with `noGit` the copy is a plain directory and is allowed.
+- Its `.git` is a `gitdir:` pointer whose target does not exist (a stale pointer), or whose target has no `commondir` (a submodule checkout). Both are refused before anything is written.
+- A merge, rebase, cherry-pick, revert, or bisect is in progress (for a linked worktree this state is checked in its own Git directory).
 - Git lock or inconsistent index state makes an exact safe copy unclear.
 
 The tool does not create branches, commit changes, or otherwise replace normal Git commands.

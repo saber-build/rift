@@ -23,6 +23,28 @@ fn marker_id(path: &Path) -> RiftId {
     marker::read(path).unwrap().unwrap()
 }
 
+/// Builds a Git repository at `temp/main` with one commit and a linked
+/// worktree of it at `temp/app`. Returns `(main, worktree)`.
+pub(crate) fn linked_worktree(temp: &TempDir) -> (PathBuf, PathBuf) {
+    let main = temp.path().join("main");
+    fs::create_dir(&main).unwrap();
+    run(&main, &["init", "-q"]);
+    run(&main, &["config", "user.email", "test@example.com"]);
+    run(&main, &["config", "user.name", "Test"]);
+    fs::write(main.join("file.txt"), "hello").unwrap();
+    run(&main, &["add", "file.txt"]);
+    run(&main, &["commit", "-q", "-m", "initial"]);
+    let linked = temp.path().join("app");
+    run(
+        &main,
+        &["worktree", "add", "-q", "--detach", linked.to_str().unwrap()],
+    );
+    (
+        fs::canonicalize(main).unwrap(),
+        fs::canonicalize(linked).unwrap(),
+    )
+}
+
 fn create_input(from: PathBuf, name: &str) -> Create {
     Create::new(from).named(name)
 }
@@ -183,6 +205,143 @@ fn create_copy_all_preserves_regenerable_artifacts() {
         fs::read_to_string(child.join("node_modules/pkg/index.js")).unwrap(),
         "module"
     );
+}
+
+#[test]
+fn create_honors_custom_exclude_and_include() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    fs::create_dir_all(source.join("fixtures")).unwrap();
+    fs::write(source.join("fixtures/large.bin"), "data").unwrap();
+    fs::create_dir_all(source.join("dist")).unwrap();
+    fs::write(source.join("dist/bundle.js"), "bundle").unwrap();
+    fs::create_dir_all(source.join("node_modules/pkg")).unwrap();
+    fs::write(source.join("node_modules/pkg/index.js"), "module").unwrap();
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+
+    let child = manager
+        .create_with_options(
+            create_input(source.clone(), "filtered"),
+            create_options(CopyMode::Filtered, HookMode::Run)
+                .exclude(vec!["fixtures".to_owned()])
+                .include(vec!["dist".to_owned()]),
+        )
+        .unwrap();
+
+    assert!(!child.join("fixtures").exists());
+    assert!(!child.join("node_modules").exists());
+    assert_eq!(
+        fs::read_to_string(child.join("dist/bundle.js")).unwrap(),
+        "bundle"
+    );
+}
+
+#[test]
+fn create_rejects_filters_combined_with_copy_all() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+
+    assert!(matches!(
+        manager.create_with_options(
+            create_input(source.clone(), "child"),
+            create_options(CopyMode::All, HookMode::Run).exclude(vec!["fixtures".to_owned()]),
+        ),
+        Err(Error::InvalidOptions(_))
+    ));
+}
+
+#[test]
+fn create_rejects_unparseable_filter_patterns() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+
+    assert!(matches!(
+        manager.create_with_options(
+            create_input(source.clone(), "child"),
+            create_options(CopyMode::Filtered, HookMode::Run).exclude(vec!["\\".to_owned()]),
+        ),
+        Err(Error::InvalidFilter(_))
+    ));
+}
+
+#[test]
+fn create_from_linked_worktree_requires_no_git() {
+    let temp = TempDir::new().unwrap();
+    let (_main, linked) = linked_worktree(&temp);
+    let mut manager = manager(&temp);
+    manager.init(&linked).unwrap();
+
+    assert!(matches!(
+        manager.create(create_input(linked.clone(), "child")),
+        Err(Error::LinkedWorktreeRequiresNoGit(_))
+    ));
+}
+
+#[test]
+fn create_from_linked_worktree_with_no_git_yields_a_plain_copy() {
+    let temp = TempDir::new().unwrap();
+    let (main, linked) = linked_worktree(&temp);
+    let mut manager = manager(&temp);
+    manager.init(&linked).unwrap();
+
+    let child = manager
+        .create_with_options(
+            create_input(linked.clone(), "child"),
+            create_options(CopyMode::Filtered, HookMode::Run).no_git(true),
+        )
+        .unwrap();
+
+    assert!(!child.join(".git").exists());
+    assert_eq!(fs::read_to_string(child.join("file.txt")).unwrap(), "hello");
+    // The source keeps its `.git` pointer file untouched, and the marker is
+    // hidden in the repository shared by every worktree.
+    assert!(linked.join(".git").is_file());
+    assert!(
+        fs::read_to_string(main.join(".git/info/exclude"))
+            .unwrap()
+            .lines()
+            .any(|line| line == "/.rift")
+    );
+}
+
+#[test]
+fn create_no_git_strips_git_from_a_normal_repository() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    run(&source, &["init", "-q"]);
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+
+    let child = manager
+        .create_with_options(
+            create_input(source.clone(), "child"),
+            create_options(CopyMode::Filtered, HookMode::Run).no_git(true),
+        )
+        .unwrap();
+
+    assert!(!child.join(".git").exists());
+    assert_eq!(fs::read_to_string(child.join("file.txt")).unwrap(), "hello");
+}
+
+#[test]
+fn create_rejects_no_git_combined_with_copy_all() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+
+    assert!(matches!(
+        manager.create_with_options(
+            create_input(source.clone(), "child"),
+            create_options(CopyMode::All, HookMode::Run).no_git(true),
+        ),
+        Err(Error::InvalidOptions(_))
+    ));
 }
 
 #[test]
@@ -533,7 +692,13 @@ struct InitializingStrategy {
 }
 
 impl Strategy for InitializingStrategy {
-    fn copy_directory(&self, _from: &Path, _to: &Path, _mode: CopyMode) -> Result<()> {
+    fn copy_directory(
+        &self,
+        _from: &Path,
+        _to: &Path,
+        _mode: CopyMode,
+        _filter: &crate::filter::CopyFilter,
+    ) -> Result<()> {
         unreachable!()
     }
 
@@ -990,28 +1155,73 @@ fn unsafe_git_states_are_rejected_after_initialization() {
 }
 
 #[test]
-fn linked_git_worktree_source_is_rejected_after_initialization() {
+fn stale_worktree_pointer_is_refused_without_side_effects() {
     let temp = TempDir::new().unwrap();
     let source = source(&temp);
     run(&source, &["init"]);
     let mut manager = manager(&temp);
     manager.init(&source).unwrap();
+    // A pointer left behind after its repository was moved or deleted.
     fs::remove_dir_all(source.join(".git")).unwrap();
     fs::write(source.join(".git"), "gitdir: ../linked/.git").unwrap();
 
-    let error = manager
-        .create(Create::new(source.clone()).named("linked-worktree"))
-        .unwrap_err();
+    assert!(matches!(
+        manager.create(Create::new(source.clone()).named("linked-worktree")),
+        Err(Error::UnsafeGit(_))
+    ));
+    assert!(matches!(
+        manager.create_with_options(
+            Create::new(source.clone()).named("linked-worktree"),
+            create_options(CopyMode::Filtered, HookMode::Run).no_git(true),
+        ),
+        Err(Error::UnsafeGit(_))
+    ));
+    assert!(matches!(manager.init(&source), Err(Error::UnsafeGit(_))));
 
-    assert!(matches!(error, Error::UnsafeGit(message) if message.contains("linked")));
+    // Nothing was fabricated at the dangling target, copied, or registered.
+    assert!(!temp.path().join("linked").exists());
     assert!(!child_path(&source, "linked-worktree").exists());
     assert!(manager.list(&source).unwrap().is_empty());
+}
+
+#[test]
+fn create_never_filters_inside_the_git_directory() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    run(&source, &["init", "-q"]);
+    run(&source, &["config", "user.email", "test@example.com"]);
+    run(&source, &["config", "user.name", "Test"]);
+    run(&source, &["add", "file.txt"]);
+    run(&source, &["commit", "-q", "-m", "initial"]);
+    // A branch named like a built-in excluded artifact, and a dotfile that a
+    // broad user pattern should drop.
+    run(&source, &["branch", "build"]);
+    fs::write(source.join(".env"), "secret").unwrap();
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+
+    let child = manager
+        .create_with_options(
+            create_input(source.clone(), "child"),
+            create_options(CopyMode::Filtered, HookMode::Run).exclude(vec![".*".to_owned()]),
+        )
+        .unwrap();
+
+    assert!(child.join(".git").is_dir());
+    assert!(child.join(".git/refs/heads/build").is_file());
+    assert!(!child.join(".env").exists());
 }
 
 struct PartialFailureStrategy;
 
 impl Strategy for PartialFailureStrategy {
-    fn copy_directory(&self, _from: &Path, to: &Path, _mode: CopyMode) -> Result<()> {
+    fn copy_directory(
+        &self,
+        _from: &Path,
+        to: &Path,
+        _mode: CopyMode,
+        _filter: &crate::filter::CopyFilter,
+    ) -> Result<()> {
         fs::create_dir(to)?;
         fs::write(to.join("copied-before-failure.txt"), "partial")?;
         fs::create_dir(to.join("nested"))?;
@@ -1144,7 +1354,7 @@ fn running_as_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
-fn run(path: &Path, args: &[&str]) {
+pub(crate) fn run(path: &Path, args: &[&str]) {
     assert!(
         Command::new("git")
             .arg("-C")
