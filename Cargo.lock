@@ -785,7 +785,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "rift"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "dirs",
  "git2",
@@ -804,7 +804,7 @@ dependencies = [
 
 [[package]]
 name = "rift-cli"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "clap",
  "rift",
@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "rift-ffi"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "rift",
  "serde",
