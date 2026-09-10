@@ -110,13 +110,23 @@ impl CopyFilter {
         matches!(self.matcher.matched(path, is_dir), Match::Ignore(_))
     }
 
+    /// Whether the entry at `path` (relative to the copy root), or a
+    /// directory above it, is left out of the copy. Every ancestor is judged
+    /// as a directory. Because a pruning walk never descends into an excluded
+    /// directory, this is exactly "nothing at `path` reaches the copy" — the
+    /// condition under which a destination inside the source is safe.
+    pub(crate) fn excludes_path_or_ancestor(&self, path: &Path) -> bool {
+        path.ancestors()
+            .filter(|ancestor| !ancestor.as_os_str().is_empty())
+            .any(|ancestor| self.excludes(ancestor, true))
+    }
+
     /// [`Self::excludes`] for a walkdir entry rooted at `from`. Entries that
     /// are not under `from` are never excluded.
     pub(crate) fn excludes_entry(&self, from: &Path, entry: &walkdir::DirEntry) -> bool {
-        entry
-            .path()
-            .strip_prefix(from)
-            .map_or(false, |path| self.excludes(path, entry.file_type().is_dir()))
+        entry.path().strip_prefix(from).map_or(false, |path| {
+            self.excludes(path, entry.file_type().is_dir())
+        })
     }
 }
 
@@ -166,7 +176,8 @@ mod tests {
         no_git: bool,
         default_excludes: bool,
     ) -> CopyFilter {
-        let owned = |patterns: &[&str]| patterns.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>();
+        let owned =
+            |patterns: &[&str]| patterns.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>();
         CopyFilter::new(&owned(exclude), &owned(include), no_git, default_excludes).unwrap()
     }
 
@@ -178,6 +189,18 @@ mod tests {
         assert!(filter.excludes(Path::new("packages/app/.yarn/cache"), true));
         assert!(filter.excludes(Path::new("packages/app/.yarn/install-state.gz"), false));
         assert!(!filter.excludes(Path::new("packages/app/package-lock.json"), false));
+    }
+
+    #[test]
+    fn excludes_path_or_ancestor_walks_up_to_an_excluded_directory() {
+        let filter = build_without_defaults(&["/.ade/drafts"], &[], false);
+
+        assert!(filter.excludes_path_or_ancestor(Path::new(".ade/drafts")));
+        assert!(filter.excludes_path_or_ancestor(Path::new(".ade/drafts/first")));
+        assert!(filter.excludes_path_or_ancestor(Path::new(".ade/drafts/.trash/x-first")));
+        assert!(!filter.excludes_path_or_ancestor(Path::new(".ade")));
+        assert!(!filter.excludes_path_or_ancestor(Path::new(".ade/config.toml")));
+        assert!(!filter.excludes_path_or_ancestor(Path::new("")));
     }
 
     #[test]

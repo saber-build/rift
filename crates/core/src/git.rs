@@ -10,7 +10,9 @@ pub(crate) enum Source {
     Repository,
     /// A `git worktree add` checkout: `.git` is a `gitdir:` pointer file and
     /// `common_dir` is the repository directory shared with the main checkout.
-    LinkedWorktree { common_dir: PathBuf },
+    LinkedWorktree {
+        common_dir: PathBuf,
+    },
 }
 
 impl Source {
@@ -36,38 +38,62 @@ pub(crate) fn repository_exclude_file(path: &Path) -> PathBuf {
     path.join(".git").join("info").join("exclude")
 }
 
+/// Classifies `path` as a plain directory, a repository, or a linked
+/// worktree, resolving the worktree's shared repository directory. A `.git`
+/// pointer that names a missing Git directory, or one without `commondir`,
+/// is refused. Use this when the copy leaves `.git` out (`git: false`):
+/// nothing under it is copied, so an in-progress Git operation cannot be
+/// captured half-way and a lock briefly held by another Git process must not
+/// fail the copy. [`check_source`] adds that refusal for copies that carry
+/// `.git`.
+pub(crate) fn classify_source(path: &Path) -> Result<Source> {
+    Ok(classify(path)?.0)
+}
+
+/// [`classify_source`], refusing the source while a Git operation is in
+/// progress — a merge, cherry-pick, revert, bisect, or rebase, or a held
+/// `index.lock`/`HEAD.lock` — since a copy that carries `.git` would capture
+/// that state half-way.
 pub(crate) fn check_source(path: &Path) -> Result<Source> {
+    let (source, git_dir) = classify(path)?;
+    if let Some(git_dir) = git_dir {
+        for state in [
+            "MERGE_HEAD",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+            "BISECT_LOG",
+            "rebase-merge",
+            "rebase-apply",
+            "index.lock",
+            "HEAD.lock",
+        ] {
+            if git_dir.join(state).exists() {
+                return Err(Error::UnsafeGit(format!("Git state in progress: {state}")));
+            }
+        }
+    }
+    Ok(source)
+}
+
+/// The source kind plus the Git directory whose state governs it: `.git`
+/// itself for a repository, the worktree's private directory (the `gitdir:`
+/// target, where its `index.lock` lives) for a linked worktree, none for a
+/// plain directory.
+fn classify(path: &Path) -> Result<(Source, Option<PathBuf>)> {
     let git = path.join(".git");
     let metadata = match fs::metadata(&git) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Source::PlainDirectory);
+            return Ok((Source::PlainDirectory, None));
         }
         Err(error) => return Err(error.into()),
     };
-    let (source, git_dir) = if metadata.is_dir() {
-        (Source::Repository, git)
-    } else {
-        let git_dir = worktree_git_dir(path)?;
-        let common_dir = common_git_dir(&git_dir)?;
-        (Source::LinkedWorktree { common_dir }, git_dir)
-    };
-
-    for state in [
-        "MERGE_HEAD",
-        "CHERRY_PICK_HEAD",
-        "REVERT_HEAD",
-        "BISECT_LOG",
-        "rebase-merge",
-        "rebase-apply",
-        "index.lock",
-        "HEAD.lock",
-    ] {
-        if git_dir.join(state).exists() {
-            return Err(Error::UnsafeGit(format!("Git state in progress: {state}")));
-        }
+    if metadata.is_dir() {
+        return Ok((Source::Repository, Some(git)));
     }
-    Ok(source)
+    let git_dir = worktree_git_dir(path)?;
+    let common_dir = common_git_dir(&git_dir)?;
+    Ok((Source::LinkedWorktree { common_dir }, Some(git_dir)))
 }
 
 /// Resolves the Git directory named by a `.git` pointer file
@@ -228,10 +254,7 @@ mod tests {
 
         // In-progress state lives in the worktree's own Git directory.
         fs::write(worktree_git_dir(&linked).unwrap().join("MERGE_HEAD"), "x").unwrap();
-        assert!(matches!(
-            check_source(&linked),
-            Err(Error::UnsafeGit(_))
-        ));
+        assert!(matches!(check_source(&linked), Err(Error::UnsafeGit(_))));
     }
 
     #[test]

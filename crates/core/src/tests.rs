@@ -37,7 +37,13 @@ pub(crate) fn linked_worktree(temp: &TempDir) -> (PathBuf, PathBuf) {
     let linked = temp.path().join("app");
     run(
         &main,
-        &["worktree", "add", "-q", "--detach", linked.to_str().unwrap()],
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            linked.to_str().unwrap(),
+        ],
     );
     (
         fs::canonicalize(main).unwrap(),
@@ -431,6 +437,139 @@ fn create_rejects_no_git_combined_with_copy_all() {
         ),
         Err(Error::InvalidOptions(_))
     ));
+}
+
+#[test]
+fn create_no_git_ignores_in_progress_git_state() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    run(&source, &["init", "-q"]);
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+    fs::write(source.join(".git/index.lock"), "").unwrap();
+    fs::write(source.join(".git/MERGE_HEAD"), "commit").unwrap();
+
+    // A copy that carries `.git` still refuses the half-finished state...
+    assert!(matches!(
+        manager.create(create_input(source.clone(), "with-git")),
+        Err(Error::UnsafeGit(_))
+    ));
+    // ...while one that leaves `.git` out copies nothing that state lives in.
+    let child = manager
+        .create_with_options(
+            create_input(source.clone(), "child"),
+            create_options(CopyMode::Filtered, HookMode::Run).git(false),
+        )
+        .unwrap();
+
+    assert!(!child.join(".git").exists());
+    assert_eq!(fs::read_to_string(child.join("file.txt")).unwrap(), "hello");
+}
+
+#[test]
+fn create_no_git_ignores_in_progress_state_in_a_linked_worktree() {
+    let temp = TempDir::new().unwrap();
+    let (main, linked) = linked_worktree(&temp);
+    let mut manager = manager(&temp);
+    manager.init(&linked).unwrap();
+    // A linked worktree's index lock lives in its private Git directory.
+    fs::write(main.join(".git/worktrees/app/index.lock"), "").unwrap();
+
+    let child = manager
+        .create_with_options(
+            create_input(linked.clone(), "child"),
+            create_options(CopyMode::Filtered, HookMode::Run).git(false),
+        )
+        .unwrap();
+
+    assert!(!child.join(".git").exists());
+    assert_eq!(fs::read_to_string(child.join("file.txt")).unwrap(), "hello");
+}
+
+#[test]
+fn create_into_the_source_is_allowed_when_the_filter_excludes_the_destination() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    fs::create_dir_all(source.join(".ade")).unwrap();
+    fs::write(source.join(".ade/config.toml"), "budget = 1").unwrap();
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+    let storage = source.join(".ade/drafts");
+    let options = || {
+        create_options(CopyMode::Filtered, HookMode::Run).exclude(vec!["/.ade/drafts".to_owned()])
+    };
+
+    let first = manager
+        .create_with_options(
+            create_input(source.clone(), "first").with_storage(Some(storage.clone())),
+            options(),
+        )
+        .unwrap();
+
+    assert_eq!(first, storage.join("first"));
+    assert_eq!(fs::read_to_string(first.join("file.txt")).unwrap(), "hello");
+    // Sibling content under `.ade` is ordinary and copied; only the excluded
+    // destination directory is left out, so the copy cannot contain itself.
+    assert_eq!(
+        fs::read_to_string(first.join(".ade/config.toml")).unwrap(),
+        "budget = 1"
+    );
+    assert!(!first.join(".ade/drafts").exists());
+
+    let second = manager
+        .create_with_options(
+            create_input(source.clone(), "second").with_storage(Some(storage.clone())),
+            options(),
+        )
+        .unwrap();
+
+    assert!(!second.join(".ade/drafts").exists());
+    assert_eq!(manager.list(&source).unwrap().len(), 2);
+
+    // Removal trashes next to the rift, still under the excluded directory,
+    // and gc reclaims it without touching the source.
+    let first_id = marker_id(&first);
+    manager.remove(&first).unwrap();
+    let trashed = trash_path(&first_id, &first).unwrap();
+    assert!(trashed.starts_with(&storage));
+    assert!(trashed.exists());
+    assert_eq!(manager.gc().unwrap(), vec![trashed.clone()]);
+    assert!(!trashed.exists());
+    assert_eq!(
+        fs::read_to_string(source.join("file.txt")).unwrap(),
+        "hello"
+    );
+    assert_eq!(manager.list(&source).unwrap(), vec![second]);
+}
+
+#[test]
+fn create_into_the_source_is_refused_when_the_copy_would_contain_it() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+    let storage = source.join(".ade/drafts");
+
+    // A pattern that does not cover the destination.
+    assert!(matches!(
+        manager.create_with_options(
+            create_input(source.clone(), "child").with_storage(Some(storage.clone())),
+            create_options(CopyMode::Filtered, HookMode::Run).exclude(vec!["/other".to_owned()]),
+        ),
+        Err(Error::InsideSource(_))
+    ));
+    // A filter that drops nothing runs as an exact copy, which applies no
+    // patterns at all.
+    assert!(matches!(
+        manager.create_with_options(
+            create_input(source.clone(), "child").with_storage(Some(storage.clone())),
+            create_options(CopyMode::Filtered, HookMode::Run).default_excludes(false),
+        ),
+        Err(Error::InsideSource(_))
+    ));
+    // Refused before anything is created under the destination parent.
+    assert!(!storage.exists());
+    assert!(manager.list(&source).unwrap().is_empty());
 }
 
 #[test]

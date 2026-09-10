@@ -55,7 +55,9 @@ pub enum Error {
     AlreadyExists(PathBuf),
     #[error("cannot remove subtree while a recorded rift path is missing: {0}")]
     MissingRift(PathBuf),
-    #[error("cannot copy a workspace into itself: {0}")]
+    #[error(
+        "cannot copy a workspace into itself unless the destination is excluded from the copy: {0}"
+    )]
     InsideSource(PathBuf),
     #[error("invalid rift config at {path}: {message}")]
     InvalidConfig { path: PathBuf, message: String },
@@ -201,12 +203,8 @@ impl CreateOptions {
         // An exact copy applies no patterns, so its filter is built empty and
         // the mode below falls out of the filter alone: the two never disagree.
         let default_excludes = self.default_excludes && self.copy_mode == CopyMode::Filtered;
-        let filter = filter::CopyFilter::new(
-            &self.exclude,
-            &self.include,
-            !self.git,
-            default_excludes,
-        )?;
+        let filter =
+            filter::CopyFilter::new(&self.exclude, &self.include, !self.git, default_excludes)?;
         let copy_mode = if filter.can_exclude() {
             CopyMode::Filtered
         } else {
@@ -300,7 +298,15 @@ impl Manager {
         let requested = existing_directory(&input.from)?;
         let source = self.workspace_from(&requested)?;
         let from = source.path.clone();
-        let git = git::check_source(&from)?;
+        // A copy that carries `.git` must not capture an in-progress Git
+        // operation; one that leaves `.git` out copies nothing that state
+        // lives in, so only the source kind matters and a transient lock
+        // held by another Git process cannot fail it.
+        let git = if options.git {
+            git::check_source(&from)?
+        } else {
+            git::classify_source(&from)?
+        };
         if git.is_linked_worktree() && options.git {
             return Err(Error::LinkedWorktreeRequiresNoGit(from));
         }
@@ -311,15 +317,18 @@ impl Manager {
             None => default_storage(&root.path)?,
         };
         let name = RiftName::from_optional(input.name)?;
-        if destination_parent.join(name.as_str()).starts_with(&from) {
-            return Err(Error::InsideSource(destination_parent.join(name.as_str())));
-        }
+        // Checked before anything is created under the parent, then again on
+        // the canonical path (a symlinked parent can resolve into the source).
+        check_destination(
+            &from,
+            &destination_parent.join(name.as_str()),
+            copy_mode,
+            &filter,
+        )?;
         fs::create_dir_all(&destination_parent)?;
         let destination_parent = fs::canonicalize(destination_parent)?;
         let destination = destination_parent.join(name.as_str());
-        if destination.starts_with(&from) {
-            return Err(Error::InsideSource(destination));
-        }
+        check_destination(&from, &destination, copy_mode, &filter)?;
         if destination.exists() {
             return Err(Error::AlreadyExists(destination));
         }
@@ -344,9 +353,9 @@ impl Manager {
             &source.id,
         )?;
 
-        if let Err(error) =
-            self.strategy
-                .copy_directory(&from, &destination, copy_mode, &filter)
+        if let Err(error) = self
+            .strategy
+            .copy_directory(&from, &destination, copy_mode, &filter)
         {
             if destination.exists() {
                 let _ = self.strategy.remove_directory(&destination);
@@ -711,6 +720,26 @@ fn existing_directory(path: &Path) -> Result<PathBuf> {
         return Err(Error::Path(format!("not a directory: {}", path.display())));
     }
     Ok(path)
+}
+
+/// A destination inside the source is refused unless the copy leaves it out:
+/// a filtered copy whose patterns exclude the destination's source-relative
+/// path, or a directory above it, never descends into it, so no rift can end
+/// up containing itself or its siblings (nor the adjacent `.trash`). An exact
+/// copy applies no patterns and can never qualify.
+fn check_destination(
+    from: &Path,
+    destination: &Path,
+    copy_mode: CopyMode,
+    filter: &filter::CopyFilter,
+) -> Result<()> {
+    let Ok(relative) = destination.strip_prefix(from) else {
+        return Ok(());
+    };
+    if copy_mode == CopyMode::Filtered && filter.excludes_path_or_ancestor(relative) {
+        return Ok(());
+    }
+    Err(Error::InsideSource(destination.to_path_buf()))
 }
 
 fn absolute_path(path: &Path) -> Result<PathBuf> {

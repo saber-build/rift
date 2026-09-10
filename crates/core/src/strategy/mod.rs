@@ -1,7 +1,7 @@
-use crate::filter::CopyFilter;
-use crate::{CopyMode, InitProgress, Result};
 #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
 use crate::Error;
+use crate::filter::CopyFilter;
+use crate::{CopyMode, InitProgress, Result};
 use std::fs;
 use std::path::Path;
 

@@ -36,12 +36,7 @@ impl Strategy for BtrfsStrategy {
     }
 }
 
-fn copy_directory_linux(
-    from: &Path,
-    to: &Path,
-    mode: CopyMode,
-    filter: &CopyFilter,
-) -> Result<()> {
+fn copy_directory_linux(from: &Path, to: &Path, mode: CopyMode, filter: &CopyFilter) -> Result<()> {
     if !is_btrfs_filesystem(from)? {
         return Err(Error::CowUnavailable(format!(
             "Linux snapshot creation requires btrfs; {} is on another filesystem",
@@ -406,8 +401,13 @@ mod linux_tests {
         );
         assert_copy_diverges_after_mutation(&source.join("file.txt"), &snapshot.join("file.txt"));
 
-        copy_directory_linux(&source, &filtered, CopyMode::Filtered, &CopyFilter::default())
-            .unwrap();
+        copy_directory_linux(
+            &source,
+            &filtered,
+            CopyMode::Filtered,
+            &CopyFilter::default(),
+        )
+        .unwrap();
         assert!(is_btrfs_subvolume(&filtered).unwrap());
         assert_copy_diverges_after_mutation(&source.join("file.txt"), &filtered.join("file.txt"));
 
